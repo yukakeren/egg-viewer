@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>POLYDRAW EGG File Viewer</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100">
+    <div class="p-8">
+        <div class="max-w-6xl mx-auto">
+            <!-- Header -->
+            <div class="bg-white rounded-lg shadow-xl p-6 mb-6">
+                <h1 class="text-3xl font-bold text-gray-800 mb-2">
+                    POLYDRAW EGG File Viewer
+                </h1>
+                <p class="text-gray-600 mb-4">
+                    Upload or paste an EGG format file to visualize polynomial graphs
+                </p>
+                
+                <!-- Upload Section -->
+                <div class="flex gap-4 mb-4">
+                    <label class="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg cursor-pointer hover:bg-blue-700 transition">
+                        📤 Upload EGG File
+                        <input type="file" id="fileInput" accept=".egg,.txt" class="hidden">
+                    </label>
+                    
+                    <textarea
+                        id="pasteArea"
+                        placeholder="Or paste EGG content here and press Enter..."
+                        class="flex-1 px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none resize-none"
+                        rows="1"
+                    ></textarea>
+                </div>
+                
+                <!-- Error Display -->
+                <div id="errorBox" class="hidden bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mb-4"></div>
+                
+                <!-- Zoom Controls -->
+                <div id="controls" class="hidden flex items-center gap-4 mb-4">
+                    <button id="zoomOut" class="p-2 bg-gray-200 rounded hover:bg-gray-300 transition" title="Zoom Out">
+                        🔍−
+                    </button>
+                    
+                    <span id="zoomLevel" class="text-gray-700 font-medium">Zoom: 3x</span>
+                    
+                    <button id="zoomIn" class="p-2 bg-gray-200 rounded hover:bg-gray-300 transition" title="Zoom In">
+                        🔍+
+                    </button>
+                    
+                    <button id="zoomReset" class="p-2 bg-gray-200 rounded hover:bg-gray-300 transition" title="Reset Zoom">
+                        ↺
+                    </button>
+                </div>
+                
+                <!-- File Info -->
+                <div id="fileInfo" class="hidden bg-gray-50 p-4 rounded-lg mb-4"></div>
+            </div>
+            
+            <!-- Grid Display -->
+            <div id="gridContainer" class="hidden bg-white rounded-lg shadow-xl p-6">
+                <h2 class="text-xl font-bold text-gray-800 mb-4">Polynomial Graph:</h2>
+                <div id="gridWrapper" class="overflow-auto border-2 border-gray-300 rounded bg-white" style="max-height: 75vh;"></div>
+            </div>
+            
+            <!-- Instructions -->
+            <div id="instructions" class="bg-white rounded-lg shadow-xl p-6">
+                <h2 class="text-xl font-bold text-gray-800 mb-3">How to Use:</h2>
+                <ol class="list-decimal list-inside space-y-2 text-gray-600">
+                    <li>Run your POLYDRAW C++ program to generate an EGG file</li>
+                    <li>Upload the output file using the button above</li>
+                    <li>Or copy the output and paste it in the text field, then press Enter</li>
+                    <li>Use zoom controls to adjust the view</li>
+                </ol>
+                
+                <div class="mt-6 p-4 bg-blue-50 rounded-lg">
+                    <h3 class="font-semibold text-gray-800 mb-2">Example EGG Format:</h3>
+                    <pre class="text-xs text-gray-600 overflow-x-auto">P2 101 81 2 (egg)
+# Compression: 45.23%
+# x^2 - 2x + 1 [-5;5]
+(50)1(50)
+{20}0{20}1{20}0{20}
+...</pre>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let currentZoom = 3;
+        let currentData = null;
+
+        function parseEggFile(content) {
+            const lines = content.split('\n');
+            let idx = 0;
+            
+            // Parse header
+            const header = lines[idx++].trim();
+            const headerMatch = header.match(/P2\s+(\d+)\s+(\d+)\s+2\s+\(egg\)/);
+            if (!headerMatch) {
+                throw new Error('Invalid EGG file format');
+            }
+            
+            const width = parseInt(headerMatch[1]);
+            const height = parseInt(headerMatch[2]);
+            
+            // Parse comments
+            const comments = [];
+            while (idx < lines.length && lines[idx].startsWith('#')) {
+                comments.push(lines[idx].substring(1).trim());
+                idx++;
+            }
+            
+            // Parse compressed data
+            const grid = [];
+            
+            while (idx < lines.length) {
+                const line = lines[idx++].trim();
+                if (!line) continue;
+                
+                let rowData = line;
+                let verticalRepeat = 1;
+                const vertMatch = line.match(/<(\d+)>$/);
+                if (vertMatch) {
+                    verticalRepeat = parseInt(vertMatch[1]);
+                    rowData = line.substring(0, line.lastIndexOf('<'));
+                }
+                
+                const row = decodeRow(rowData, width);
+                
+                for (let i = 0; i < verticalRepeat; i++) {
+                    grid.push([...row]);
+                }
+            }
+            
+            return { width, height, grid, comments };
+        }
+        
+        function decodeRow(encoded, width) {
+            const row = [];
+            let i = 0;
+            
+            while (i < encoded.length && row.length < width) {
+                const char = encoded[i];
+                
+                if (char === '(' || char === '{' || char === '[') {
+                    const closeChar = char === '(' ? ')' : (char === '{' ? '}' : ']');
+                    const closeIdx = encoded.indexOf(closeChar, i);
+                    
+                    if (closeIdx === -1) {
+                        throw new Error('Malformed RLE in row');
+                    }
+                    
+                    const count = parseInt(encoded.substring(i + 1, closeIdx));
+                    const color = char === '(' ? 2 : (char === '{' ? 1 : 0);
+                    
+                    for (let j = 0; j < count; j++) {
+                        row.push(color);
+                    }
+                    
+                    i = closeIdx + 1;
+                } else if (char >= '0' && char <= '2') {
+                    row.push(parseInt(char));
+                    i++;
+                } else {
+                    i++;
+                }
+            }
+            
+            return row;
+        }
+        
+        function getColorForValue(value) {
+            if (value === 0) return '#000000';
+            if (value === 1) return '#808080';
+            return '#FFFFFF';
+        }
+        
+        function renderGrid(data, zoom) {
+            const pixelSize = Math.max(1, Math.floor(zoom));
+            
+            let svg = `<svg width="${data.width * pixelSize}" height="${data.height * pixelSize}" style="image-rendering: pixelated;">`;
+            
+            for (let y = 0; y < data.grid.length; y++) {
+                for (let x = 0; x < data.grid[y].length; x++) {
+                    const color = getColorForValue(data.grid[y][x]);
+                    svg += `<rect x="${x * pixelSize}" y="${y * pixelSize}" width="${pixelSize}" height="${pixelSize}" fill="${color}"/>`;
+                }
+            }
+            
+            svg += '</svg>';
+            return svg;
+        }
+        
+        function displayData(data) {
+            currentData = data;
+            
+            // Show controls and grid
+            document.getElementById('controls').classList.remove('hidden');
+            document.getElementById('fileInfo').classList.remove('hidden');
+            document.getElementById('gridContainer').classList.remove('hidden');
+            document.getElementById('instructions').classList.add('hidden');
+            
+            // Update file info
+            let infoHTML = `
+                <h2 class="font-semibold text-gray-800 mb-2">File Information:</h2>
+                <div class="text-sm text-gray-600 space-y-1">
+                    <p><strong>Dimensions:</strong> ${data.width} × ${data.height} pixels</p>
+            `;
+            data.comments.forEach((comment, idx) => {
+                const label = idx === 0 ? 'Compression:' : 'Input:';
+                infoHTML += `<p><strong>${label}</strong> ${comment}</p>`;
+            });
+            infoHTML += '</div>';
+            document.getElementById('fileInfo').innerHTML = infoHTML;
+            
+            // Render grid
+            updateGrid();
+        }
+        
+        function updateGrid() {
+            if (!currentData) return;
+            document.getElementById('gridWrapper').innerHTML = renderGrid(currentData, currentZoom);
+            document.getElementById('zoomLevel').textContent = `Zoom: ${currentZoom}x`;
+        }
+        
+        function showError(message) {
+            const errorBox = document.getElementById('errorBox');
+            errorBox.textContent = message;
+            errorBox.classList.remove('hidden');
+            setTimeout(() => errorBox.classList.add('hidden'), 5000);
+        }
+        
+        // File upload handler
+        document.getElementById('fileInput').addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            
+            const reader = new FileReader();
+            reader.onload = (event) => {
+                try {
+                    const data = parseEggFile(event.target.result);
+                    currentZoom = 3;
+                    displayData(data);
+                } catch (err) {
+                    showError(`Error parsing file: ${err.message}`);
+                }
+            };
+            reader.readAsText(file);
+        });
+        
+        // Paste handler
+        document.getElementById('pasteArea').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                const text = e.target.value;
+                if (text) {
+                    try {
+                        const data = parseEggFile(text);
+                        currentZoom = 3;
+                        displayData(data);
+                        e.target.value = '';
+                    } catch (err) {
+                        showError(`Error parsing pasted data: ${err.message}`);
+                    }
+                }
+            }
+        });
+        
+        // Zoom controls
+        document.getElementById('zoomOut').addEventListener('click', () => {
+            currentZoom = Math.max(1, currentZoom - 1);
+            updateGrid();
+        });
+        
+        document.getElementById('zoomIn').addEventListener('click', () => {
+            currentZoom = Math.min(10, currentZoom + 1);
+            updateGrid();
+        });
+        
+        document.getElementById('zoomReset').addEventListener('click', () => {
+            currentZoom = 3;
+            updateGrid();
+        });
+    </script>
+</body>
+</html>
